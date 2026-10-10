@@ -4,7 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
-#[cfg(target_arch = "x86")]
+#[cfg(all(windows, target_arch = "x86"))]
 mod dll;
 mod rust_backend;
 
@@ -49,7 +49,7 @@ impl App {
         let mut backends: Vec<Box<dyn Backend>> = vec![Box::new(rust_backend::RustBackend::new())];
         #[allow(unused_mut)]
         let mut status = "Ready".to_string();
-        #[cfg(target_arch = "x86")]
+        #[cfg(all(windows, target_arch = "x86"))]
         match dll::DllBackend::open(&_cc.egui_ctx) {
             Ok(b) => backends.push(Box::new(b)),
             Err(e) => status = format!("Original DLLs unavailable: {e}"),

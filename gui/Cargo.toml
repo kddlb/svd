@@ -11,5 +11,5 @@ softvoice = { path = "../port/crates/softvoice" }
 
 # The original-DLL backend (for comparison) only exists in 32-bit builds:
 #   cargo build --release --target i686-pc-windows-msvc
-[target.'cfg(target_arch = "x86")'.dependencies]
+[target.'cfg(all(windows, target_arch = "x86"))'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_Graphics_Gdi"] }
