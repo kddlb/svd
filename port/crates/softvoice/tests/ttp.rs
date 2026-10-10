@@ -51,6 +51,9 @@ fn run(job: &Job) -> Result<(), String> {
 
 #[test]
 fn text_to_phon() {
+    if golden::missing(|n| n.starts_with("ttp")) {
+        return;
+    }
     let mut jobs = Vec::new();
     for path in golden::files() {
         let name = path.file_name().unwrap().to_string_lossy().to_string();

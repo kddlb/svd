@@ -148,3 +148,17 @@ pub fn files() -> Vec<PathBuf> {
     v.sort();
     v
 }
+
+/// True (after printing a note) when there is no golden file whose name
+/// satisfies `pred`, so tests can skip instead of failing on a fresh clone.
+/// The golden data is generated with the oracle; see the README.
+pub fn missing(pred: impl Fn(&str) -> bool) -> bool {
+    let found = files().iter().any(|p| pred(&p.file_name().unwrap().to_string_lossy()));
+    if !found {
+        eprintln!(
+            "skipping: no golden data in {} (generate it with port/oracle, see README)",
+            dir().display()
+        );
+    }
+    !found
+}

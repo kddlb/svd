@@ -8,6 +8,9 @@ use softvoice::lang;
 
 #[test]
 fn parse_4a10() {
+    if golden::missing(|_| true) {
+        return;
+    }
     let mut failures = Vec::new();
     let n = common::for_each_phrase(|case, i, ph| {
         let (before, after) = (ph[0], ph[1]);
@@ -48,31 +51,49 @@ fn check(stage: usize, run: fn(&mut softvoice::mem::Mem, u32)) {
 
 #[test]
 fn voice_3e40() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(2, front::records::assign_voice);
 }
 
 #[test]
 fn onsets_c550() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(3, front::records::mark_onsets);
 }
 
 #[test]
 fn allophones_5910() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(4, front::records::apply_allophones);
 }
 
 #[test]
 fn syllables_c6d0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(5, front::records::syllabify);
 }
 
 #[test]
 fn boundaries_3de0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(6, front::records::mark_after_boundary);
 }
 
 #[test]
 fn syllable_arrays_cc10() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(7, |m, s| {
         front::prosody::alloc_syllables(m, s);
     });
@@ -80,21 +101,33 @@ fn syllable_arrays_cc10() {
 
 #[test]
 fn stress_c8c0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(8, front::prosody::mark_syllables);
 }
 
 #[test]
 fn f0_contour_cdc0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(9, front::prosody::f0_contour);
 }
 
 #[test]
 fn tempo_f7c0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(11, front::timing::tempo);
 }
 
 #[test]
 fn frame_alloc_c420() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check(12, |m, s| {
         front::timing::alloc_frames(m, s);
     });
@@ -102,6 +135,9 @@ fn frame_alloc_c420() {
 
 #[test]
 fn durations_c3e0() {
+    if golden::missing(|_| true) {
+        return;
+    }
     let mut failures = Vec::new();
     let n = common::for_each_phrase(|case, i, ph| {
         let (mut m, s) = common::load(ph[9]);

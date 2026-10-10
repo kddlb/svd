@@ -104,6 +104,10 @@ reproduced on purpose; see `docs/codes.md` and the module comments.
 
 ## Regenerating the golden data
 
+Building and running don't need golden data; only the comparison tests
+do. Without it, `cargo test` still passes: each golden-data test prints
+"skipping: no golden data" (visible with `-- --nocapture`) and returns.
+
 The golden files (~800 MB) aren't in the repository. On Windows, with
 MSVC Build Tools:
 

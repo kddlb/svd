@@ -46,10 +46,16 @@ fn check(lang_filter: &str) {
 
 #[test]
 fn english() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check("en");
 }
 
 #[test]
 fn spanish() {
+    if golden::missing(|_| true) {
+        return;
+    }
     check("es");
 }

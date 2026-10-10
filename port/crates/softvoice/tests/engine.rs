@@ -123,6 +123,9 @@ fn list_dll_word_diffs() {
 
 #[test]
 fn prologue_and_front_end_match() {
+    if golden::missing(|_| true) {
+        return;
+    }
     let mut failures = Vec::new();
     let mut n = 0;
     for file in golden::files() {
