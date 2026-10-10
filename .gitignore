@@ -1,0 +1,20 @@
+# Original Talk It! binaries (not redistributable) and anything derived
+# from them that embeds them
+*.dll
+*.exe
+TalkIt/
+ghp/
+
+# Build outputs
+target/
+build/
+*.obj
+*.lib
+*.exp
+*.pdb
+
+# Golden data from the oracle (large; regenerate with port/oracle)
+port/golden/*.svg
+
+# Audio renders
+*.wav

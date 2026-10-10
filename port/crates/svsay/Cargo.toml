@@ -1,0 +1,9 @@
+[package]
+name = "svsay"
+description = "Command-line front end for the SoftVoice (Talk It!) Rust port"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+softvoice = { path = "../softvoice" }
+cpal = "0.18"

@@ -1,0 +1,566 @@
+"""Build the M5 (text -> phonemes) corpora: port/corpus/ttp_*.txt.
+
+Run with `python -I tools/mkcorpus_ttp.py` from port/, then for each file
+`oracle.exe ../../corpus/ttp_X.txt ../../golden/ttp_X.svg` from oracle/build.
+
+Word lists are generated from the rule and dictionary text inside the
+language DLLs (read in place from TalkIt/), plus hand-written sentences,
+number/date/time/phone formats and seeded random material.
+"""
+import os
+import random
+import struct
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+PORT = os.path.dirname(HERE)
+TALKIT = os.path.join(os.path.dirname(PORT), 'TalkIt')
+CORPUS = os.path.join(PORT, 'corpus')
+
+
+class PE:
+    def __init__(self, path):
+        d = self.d = open(path, 'rb').read()
+        pe = struct.unpack_from('<I', d, 0x3c)[0]
+        opt = pe + 24
+        optsz = struct.unpack_from('<H', d, pe + 20)[0]
+        self.base = struct.unpack_from('<I', d, opt + 28)[0]
+        n = struct.unpack_from('<H', d, pe + 6)[0]
+        self.secs = []
+        for i in range(n):
+            o = opt + optsz + i * 40
+            vs, va, rs, ra = struct.unpack_from('<IIII', d, o + 8)
+            self.secs.append((va, max(vs, rs), ra))
+
+    def off(self, va):
+        r = va - self.base
+        for sva, size, ra in self.secs:
+            if sva <= r < sva + size:
+                return r - sva + ra
+        raise ValueError(hex(va))
+
+    def u32(self, va):
+        return struct.unpack_from('<I', self.d, self.off(va))[0]
+
+    def byte(self, va):
+        return self.d[self.off(va)]
+
+
+EN = PE(os.path.join(TALKIT, 'tieng32.dll'))
+ES = PE(os.path.join(TALKIT, 'tispan32.dll'))
+# Rule tables: (pe, letter-to-sound per char, Ä, Ö, ß, Ü, other, dictionary per letter, digits)
+TABLES = {
+    'en': (EN, 0x1c24c744, 0x1c24c8b0, 0x1c24c8b4, 0x1c24c8b8, 0x1c24c8bc, 0x1c24c8c4, 0x1c24c7cc, 0x1c24c938),
+    'es': (ES, 0x1c40e23c, 0x1c40e3a8, 0x1c40e3ac, 0x1c40e3b0, 0x1c40e3b4, 0x1c40e3bc, 0x1c40e2c4, 0x1c40e430),
+}
+
+
+def rules_from(pe, va, stop_star=False, limit=None):
+    """Parse rules left[match]right=out (terminated by '\\' or '`') from va."""
+    out = []
+    o = pe.off(va)
+    d = pe.d
+    end = len(d) if limit is None else pe.off(limit)
+    while o < end:
+        lb = d.index(b'[', o)
+        if stop_star and d[lb + 1:lb + 2] == b'*':
+            break
+        left = d[o:lb]
+        rb = d.index(b']', lb + 2) if d[lb + 1:lb + 2] == b']' and False else d.index(b']', lb + 1)
+        match = d[lb + 1:rb]
+        eq = d.index(b'=', rb)
+        right = d[rb + 1:eq]
+        t = eq + 1
+        while d[t] not in (0x5c, 0x60):
+            t += 1
+        out.append((left, match, right, d[eq + 1:t]))
+        o = t + 1
+        if lb >= end:
+            break
+    return out
+
+
+def lts_lists(lang):
+    pe, tab, c4, d6, df, dc, other = TABLES[lang][:7]
+    starts = {}
+    for c in range(0x41, 0x5b):
+        starts[chr(c)] = pe.u32(tab + 4 * c)
+    for name, p in (('\xc4', c4), ('\xd6', d6), ('\xdf', df), ('\xdc', dc), ('other', other)):
+        starts[name] = pe.u32(p)
+    addrs = sorted(set(starts.values()))
+    res = {}
+    for k, a in starts.items():
+        nxt = [x for x in addrs if x > a]
+        lim = nxt[0] if nxt else None
+        if k == 'other':
+            # ends with "[]= \" followed by int3 padding
+            o = pe.off(a)
+            e = pe.d.index(b'\xcc\xcc', o)
+            lim = a + (e - o)
+        res[k] = rules_from(pe, a, limit=lim)
+    return res
+
+
+def dict_entries(lang):
+    pe, dtab, ddig = TABLES[lang][0], TABLES[lang][7], TABLES[lang][8]
+    res = []
+    for c in range(0x41, 0x5b):
+        res += rules_from(pe, pe.u32(dtab + 4 * c), stop_star=True)
+    res += rules_from(pe, pe.u32(ddig), stop_star=True)
+    return res
+
+
+SUBST_L = {ord('#'): 'A', ord('+'): 'E', ord(':'): '', ord('^'): 'B', ord('.'): 'D', ord('&'): 'S',
+           ord('@'): 'T', ord('>'): 'A', ord('?'): '5', ord('<'): '.', ord('%'): 'ING', ord('b'): ' ',
+           ord('*'): ''}
+SUBST_R = dict(SUBST_L)
+SUBST_R[ord(':')] = 'B'
+
+
+def ctx_text(ctx, right):
+    s = ''
+    for b in ctx:
+        if b == 0x20:
+            s += ' '
+        elif b in (SUBST_R if right else SUBST_L):
+            s += (SUBST_R if right else SUBST_L)[b]
+        else:
+            s += chr(b)
+    return s
+
+
+def sample(left, match, right, alt=False):
+    lt = ctx_text(left, False)
+    rt = ctx_text(right, True)
+    if alt:
+        lt = lt.replace('A', 'O').replace('B', 'T').replace('E', 'I')
+        rt = rt.replace('A', 'U').replace('B', 'N').replace('E', 'Y').replace('ING', 'ER')
+    m = match.decode('latin-1')
+    return (lt + m + rt).strip()
+
+
+def fix(line):
+    """Corpus lines must not be empty or look like directives."""
+    line = line.rstrip('\r\n')
+    if not line.strip():
+        return None
+    if line.startswith('#'):
+        line = ' ' + line
+    return line
+
+
+class Corpus:
+    def __init__(self, name, lang='en'):
+        self.name = name
+        self.lines = ['# generated by tools/mkcorpus_ttp.py', '#nospeak 1', '#mode text', '#lang ' + lang]
+        self.n = 0
+        self.lang = lang
+
+    def d(self, s):
+        if s.startswith('#lang '):
+            self.lang = s[6:]
+        self.lines.append(s)
+
+    def add(self, *texts):
+        for t in texts:
+            t = fix(t)
+            if t is not None and self.lang == 'es':
+                # The Spanish stress rule looks back for the last letter of the
+                # output; with none at all it would read in front of the
+                # caller's buffer.  Start such lines with a word.
+                first = t.lstrip()[:1]
+                if not first or not (first.isalnum() and first.isascii() or first in LETTERS_ES):
+                    t = 'y ' + t
+            if t is not None:
+                self.lines.append(t)
+                self.n += 1
+
+    def write(self):
+        path = os.path.join(CORPUS, 'ttp_%s.txt' % self.name)
+        with open(path, 'w', encoding='utf-8', newline='\n') as f:
+            f.write('\n'.join(self.lines) + '\n')
+        print('%-28s %6d cases' % (os.path.basename(path), self.n))
+
+
+rng = random.Random(1996)
+LETTERS_ES = 'ÁÉÍÓÚÑÜáéíóúñü'
+
+# ---------------------------------------------------------------- English dictionary
+def build_dict():
+    c = Corpus('en_dict')
+    seen = set()
+    words = []
+    for left, match, right, _ in dict_entries('en'):
+        for alt in (False, True):
+            w = sample(left, match, right, alt)
+            if w and w not in seen:
+                seen.add(w)
+                words.append(w)
+    # one word per line, in mixed case like real text
+    for i, w in enumerate(words):
+        c.add(w.lower() if i % 3 == 0 else (w.capitalize() if i % 3 == 1 else w))
+    # some with plural / -ing / -ed suffixes and in short phrases
+    for w in rng.sample(words, 600):
+        c.add(w.lower() + rng.choice(['s', 'ing', 'ed', "'s", 'ly', 'er']))
+    for _ in range(300):
+        c.add(' '.join(rng.choice(words).lower() for _ in range(rng.randint(2, 7))) + rng.choice(['.', '?', '!', ',', '']))
+    c.write()
+    return words
+
+
+# ---------------------------------------------------------------- letter-to-sound rules
+def build_lts(lang, dict_words):
+    c = Corpus(lang + '_lts', lang)
+    lists = lts_lists(lang)
+    seen = set()
+    for k, rules in lists.items():
+        for left, match, right, _ in rules:
+            for alt in (False, True):
+                w = sample(left, match, right, alt)
+                if w and w not in seen:
+                    seen.add(w)
+                    c.add(w)
+                    # the same inside a longer word
+                    pre = rng.choice(['S', 'RE', 'UN', 'CON', 'A', 'BRO', 'EL'])
+                    suf = rng.choice(['S', 'ER', 'ING', 'ED', 'A', 'O', 'TION'])
+                    c.add(pre + w.replace(' ', '') + suf)
+    # random letter strings (pronounceable-ish and not)
+    vow = 'AEIOUY'
+    con = 'BCDFGHJKLMNPQRSTVWXZ'
+    for _ in range(1500 if lang == 'en' else 1200):
+        n = rng.randint(1, 12)
+        if rng.random() < 0.7:
+            w = ''.join(rng.choice(con) + rng.choice(vow) + (rng.choice(con) if rng.random() < 0.4 else '') for _ in range(max(1, n // 2)))
+        else:
+            w = ''.join(rng.choice(con + vow) for _ in range(n))
+        c.add(w if rng.random() < 0.5 else w.lower())
+    c.write()
+
+
+# ---------------------------------------------------------------- numbers
+def rnd_digits(n, lead=True):
+    s = str(rng.randint(1, 9)) if lead else str(rng.randint(0, 9))
+    return s + ''.join(str(rng.randint(0, 9)) for _ in range(n - 1))
+
+
+def commas(s):
+    out = ''
+    while len(s) > 3:
+        out = ',' + s[-3:] + out
+        s = s[:-3]
+    return s + out
+
+
+def build_numbers(lang):
+    c = Corpus(lang + '_num', lang)
+    big = ['million', 'billion', 'trillion', 'quadrillion'] if lang == 'en' else ['millon', 'billon', 'trillon', 'quadrillon']
+    # cardinals 0..1000 and selected
+    for v in list(range(0, 130)) + list(range(130, 1001, 7)) + [1000, 1001, 1010, 1100, 1999, 2000, 2001, 9999]:
+        c.add(str(v))
+    for n in range(1, 25):
+        for _ in range(6):
+            s = rnd_digits(n)
+            c.add(s)
+            c.add(commas(s))
+        c.add('1' + '0' * (n - 1))
+        c.add(commas('1' + '0' * (n - 1)))
+        c.add(commas('5' * n))
+    for s in ['0', '00', '000', '0000', '00000', '007', '0,000', '1,000', '10,000', '100,000', '1,000,000',
+              '1,000,001', '1,001,000', '12,000,000', '999,999,999,999', '1,0000', '12,34', '1,2,3', ',5', '5,',
+              '5.', '5.,', '1.5', '0.5', '.5', '.05', '12.345', '1.2.3', '3.14159', '1,234.56', '1234.5',
+              '100.00', '1,000.000', '5..5', '5.5.', '.5.', '..5']:
+        c.add(s)
+    # money
+    for s in ['$1', '$1.00', '$1.01', '$0.01', '$.01', '$.50', '$.5', '$2', '$2.50', '$12.99', '$1,000', '$1,000.00',
+              '$1,234,567.89', '$100', '$5.255', '$5.2', '$0', '$00.00', '$1.10', '$1.11', '$21.21', '$99.99', '$3.0',
+              '$', '$.', '$5', '$5,', '$5.', '$1 million', '$5 million', '$2 billion', '$3 trillion', '$1 quadrillion',
+              '$1.5 million', '$2.25 billion', '$1,000 million', '$5 millions', '$5 Million.', '($5 million)',
+              '$5 million)', '$5.00 dollars', '$1.00 each']:
+        c.add(s)
+    for _ in range(80):
+        c.add('$' + commas(rnd_digits(rng.randint(1, 9))) + rng.choice(['', '.' + rnd_digits(2, False), '.' + rnd_digits(1, False), '.' + rnd_digits(3, False)]))
+    for b in big:
+        for v in ['1', '5', '12', '1.5', '100', '1,000', '2.25', '$7', '7%']:
+            c.add('%s %s' % (v, b))
+            c.add('%s %s.' % (v, b.upper()))
+            c.add('about %s %s people' % (v, b))
+    # percent
+    for s in ['1%', '5%', '50%', '100%', '0%', '12.5%', '.5%', '1,000%', '$5%', '%', '5%%', '50 %', '99.99%', '5%,', '5%.']:
+        c.add(s)
+    # ordinals and suffixes (mixed tokens)
+    for s in ['1st', '2nd', '3rd', '4th', '11th', '21st', '22nd', '100th', '1990s', "1990's", "'90s", '5am', '5pm',
+              '10:30am', '3D', '4x4', 'A1', 'B52', 'MP3', '747s', '9-5', '24/7', '50-50', '1-2-3', '1+1', '2+2=4',
+              '5-', '-5', '+5', '5+', '(5)', '(5', '5)', '(12)', '(123)', '(1234)', '(1,234)', '(5%)', '($5)', '(5.5)',
+              '10-20', '1/2', '3/4', '1/3', '22/7', '12/25', '1/1/2000', '12-25-96', '5:', ':5', '5::5', '1:2:3:4',
+              '1.2.3.4', '192.168.0.1', '10.0', '1,2', '1,23', '1,234,56', '12,345,678', '123,4567', '5-6-7',
+              '$5-$10', '$5/hr', '5$', '5$5', '%5', '5%5', '(5)%', '1(2)3', '5(', '5((', '5))', '(-5)', '(+5)', '(5-6)',
+              '(555)', '(555) 555-1212', '(555)555-1212', '(55) 555', '(555) abc', '(555)', '(5555) 555',
+              '12ab', '12abc34', '9z', '0x1F', '1e10', '1E10', '3.5in', '6ft', '2kg', '100km/h', '5:30pm', '7.5mm']:
+        c.add(s)
+    # phone numbers
+    for s in ['555-1212', '555-0000', '555-1000', '555-2000', '555-0100', '555-1200', '800-555-1212', '800/555-1212',
+              '1-800-555-1212', '1-800-100-2000', '206-555-0100', '000-000-0000', '555-12', '555-12121', '5555-1212',
+              '1-800-5551212', '911', '411', '555 1212', '555-1212.', '555-1212,', '(206) 555-1212', '(800)555-1212',
+              '1-800-FLOWERS', '555-HELP']:
+        c.add(s)
+    for _ in range(60):
+        f = rng.choice(['###-####', '###-###-####', '###/###-####', '#-###-###-####', '(###) ###-####', '#####', '#####-####'])
+        c.add(''.join(str(rng.randint(0, 9)) if ch == '#' else ch for ch in f))
+    # times
+    for s in ['1:00', '1:05', '1:10', '1:15', '1:30', '1:59', '1:60', '12:00', '12:01', '12:45', '12:59', '13:00', '0:30',
+              '00:30', '9:09', '9:9', '10:10', '11:11', '24:00', '3:45', '3:45pm', '3:45.', '3:45,', '3:00 PM',
+              '1:00:00', '1:01:01', '2:02:02', '12:30:45', '1:00:01', '0:00:00', '10:00:00', '100:00:00', '123:45:67',
+              '999:59:59', '1:1:1', '12:34:5', '1:23:00', '5:05:05', '12:00:10', '1:30:00.', '10:20:30,']:
+        c.add(s)
+    for _ in range(60):
+        f = rng.choice(['#:##', '##:##', '#:##:##', '##:##:##', '###:##:##'])
+        c.add(''.join(str(rng.randint(0, 9)) if ch == '#' else ch for ch in f))
+    # dates
+    for s in ['1/1/96', '12/25/96', '7/4/76', '2/29/00', '1/2/03', '10/10/10', '31/12/99', '99/99/99', '0/0/00',
+              '12/1/96', '1/12/96', '12/31/1999', '1/1/2000', '13/45/67', '20/20/20', '25/30/40', '9/11/01',
+              '12/25/96.', '12/25/96,', '1/1/9', '1/1/999']:
+        c.add(s)
+    for _ in range(40):
+        f = rng.choice(['#/#/##', '##/#/##', '#/##/##', '##/##/##'])
+        c.add(''.join(str(rng.randint(0, 9)) if ch == '#' else ch for ch in f))
+    # years
+    for s in ['1996', '1900', '1901', '1910', '1999', '2000', '2001', '2005', '2010', '2020', '1066', '1492', '1776', '1000',
+              '1001', '1100', '1200', '1215', '0123', '0001', '0000', '0999', '9000', '9999', '3000', '1800', '1805',
+              '1811', '1820', '1999.', '1996,', '1984?', '5000', '7070', '2100', '2101', '1010', '1011', '1019']:
+        c.add(s)
+    for _ in range(80):
+        c.add(str(rng.randint(1000, 9999)))
+    for _ in range(20):
+        c.add('0' + rnd_digits(3, False))
+    # numbers in sentences
+    if lang == 'en':
+        sents = ['I have 3 cats and 12 dogs.', 'It costs $5.25, not $6.', 'Call 555-1212 or (206) 555-0100 today.',
+                 'The meeting is at 3:30 on 12/25/96.', 'In 1996, 50% of 1,000 people said no.',
+                 'About 5 million people live there.', 'Room 101, floor 7.', 'Chapter 11 starts on page 1,203.',
+                 'We won 21 to 14!', 'The year 2000 is near.', 'It took 1:23:45 to finish.',
+                 'Pi is about 3.14159.', 'Add 2+2 and you get 4.', 'Version 2.0.1 is out.', 'Score: 10-20.',
+                 'He was born on 7/4/76 at 5:05.', 'Only $1.01 left.', 'She ran 26.2 miles in 3:59:59.',
+                 'The (555) area code.', 'Back in the 1990s we had 486s and 386s.', 'Buy 1 get 1 free.',
+                 '1 2 3 4 5 6 7 8 9 10', 'Item #5 is $9.99.', 'Temperature: -5 to +10.', '100 percent sure.',
+                 'Answer 1) yes 2) no', 'Ranked 1st, 2nd, and 3rd.', '68000 and 80486 chips', 'The 286 and 386 and 486',
+                 'In 680X0 and 80X86 land.', 'Dial 1-2-3 now.']
+    else:
+        sents = ['Tengo 3 gatos y 12 perros.', 'Cuesta $5.25, no $6.', 'Llame al 555-1212 hoy.',
+                 'La reunion es a las 3:30 del 12/25/96.', 'En 1996, el 50% de 1,000 personas dijo que no.',
+                 'Viven alli unos 5 millon de personas.', 'Habitacion 101, piso 7.', 'El capitulo 11 empieza en la pagina 1,203.',
+                 'Ganamos 21 a 14!', 'El ano 2000 se acerca.', 'Tardo 1:23:45 en terminar.', 'Pi es casi 3.14159.',
+                 'Suma 2+2 y da 4.', 'Nacio el 7/4/76 a las 5:05.', 'Solo quedan $1.01.', 'Corrio 42.2 km en 3:59:59.',
+                 'Cien mil, 100,000 y 1,000,000.', '1 2 3 4 5 6 7 8 9 10', 'Uno, dos, 3, cuatro.',
+                 'El 1ro y el 2do.', 'Son 500 o 700 o 900 pesos.', 'De 101 a 199 y de 201 a 999.', '1,500 y 2,001 y 21,021.']
+    for s in sents:
+        c.add(s)
+    # random cardinals in context
+    for _ in range(150):
+        c.add('%s %s' % (rng.choice(['about', 'over', 'just', 'el', 'los', 'only', 'page']), commas(rnd_digits(rng.randint(1, 13)))))
+    c.write()
+
+
+# ---------------------------------------------------------------- punctuation, symbols, Latin-1, braces, flags
+def build_misc(lang):
+    c = Corpus(lang + '_misc', lang)
+    for ch in range(0x20, 0x100):
+        if ch == 0x7f:
+            continue
+        s = chr(ch)
+        c.add('a' + s + 'b', s + 'word', 'word' + s, 'x ' + s + ' y', s * 2)
+    for ch in range(1, 0x20):
+        if ch in (0x0a, 0x0d):
+            continue
+        c.add('ab' + chr(ch) + 'cd')
+    punct = ['Hello, world.', 'Hello world!', 'Is it? Yes.', 'Wait... what?', 'Mr. Smith met Dr. Jones.',
+             'St. Louis, Mo.', 'e.g. this, i.e. that', 'U.S.A.', 'a.m. and p.m.', "Don't won't can't isn't",
+             "It's John's dog's bone.", "rock 'n' roll", '"Quoted," she said.', '(parenthetical) remark',
+             '[bracketed] text', '{braces} here', 'semi; colon: dash - dash -- em', 'slash/separated/words',
+             'back\\slash', 'pipe|pipe||or', 'a & b', 'a + b = c', 'x < y > z', 'a @ b', 'under_score', 'tilde~',
+             'caret^hat', '#hash tag', 'star*star', 'percent % sign', 'dollar $ sign', 'at@example.com',
+             'http://www.example.com/', 'C:\\WINDOWS\\SYSTEM', 'TalkIt! is fun.', 'What?!', '...', '?', '!', '.',
+             ',', '-', "'", '"', '??WHO', 'MICROSOFT', '__VERZHUN', '== equals ==', '=', 'Ok.Ok', 'end.', 'end ?',
+             'A. B. C.', 'A B C D E F G', 'IBM CIA FBI NASA', 'Hmm... ok.', 'Yes!No?Maybe.', 'x2.', 'Q&A', 'AT&T',
+             'R&D', 'B&B', '$&%', '1.', 'a.', '.a', '..', '.,', ',.', '?.', '!?', ' ? ', ' . ', 'one . two',
+             '\u00bfQu\u00e9?', '\u00a1Hola!', 'na\u00efve caf\u00e9', 'r\u00e9sum\u00e9', 'pi\u00f1ata', 'M\u00fcller',
+             'Stra\u00dfe', '\u00c4rger \u00d6l \u00dcbel', '\u00e4 \u00f6 \u00fc \u00df', 'Espa\u00f1a', 'Se\u00f1or',
+             'Jos\u00e9 Mar\u00eda', '\u00c1NGEL \u00c9XITO \u00cdNDICE \u00d3RBITA \u00daNICO', 'a\u00f1o ni\u00f1o',
+             '\u00a2 \u00a3 \u00a5 \u00a9 \u00ae \u00b0 \u00b1 \u00bc \u00bd \u00be \u00d7 \u00f7', '5\u00b0 C', '\u00a35', '\u00a510',
+             '\u00a9 1996 Microsoft', '1\u00a2', '2\u00a2', '1\u00a3', '1\u00b0', '\u00bd cup', '3 \u00d7 4', '8 \u00f7 2',
+             'tab\there', 'two  spaces', '   leading', 'trailing   ', ' ', 'x', 'I', 'A', 'a', 'the', 'The end.']
+    for s in punct:
+        c.add(s)
+    # words for rules the generated lists missed (contexts with '<', whole-word
+    # rules, contractions, abbreviations, ordinals, the digit dictionary)
+    extra = ["x-A-y", "(A)", "5A5", "aren't", "can't", "don't", "haven't", "shouldn't", "wouldn't", "I'm", "I'd",
+             "I've", "I'll", "he'll", "he'd", "we'll", "we'd", "we've", "F's", "H's", "S's", "Dr. Who", "Mr. X",
+             "Mrs. Y", "Ms. Z", "Prof. Q", "St. Paul", "5 lb. bag", "6 ft. tall", "3 mi. away", "O.K.", "ave.",
+             "into", "must", "will", "now", "now?", "no", "no!", "even", "did", "did?", "gnome", "knee", "pneumonia",
+             "ski", "mine", "sin", "ln", "thm", "living", "none", "non", "native", "Christmas", "chrome", "ignore",
+             "signs", "ignoring", "abusive", "vocabulary", "situation", "solution", "1st", "2nd", "3rd", "4th", "5th",
+             "6th", "7th", "8th", "9th", "10th", "21st", "1ST", "286", "386", "486", "680X0", "68000", "68010",
+             "68020", "68030", "68040", "68060", "80X86", "80286", "80386", "80486", "1-2-3", "Sr. Garcia", "te",
+             "TE", "SS", "Sr.", "Sra.", "Srta.", "Dra.", "Ud.", "Uds.", "etc.", "a.C.", "d.C.", "EE.UU.", "B-B-Q",
+             "AR", "DE", "Ark.", "Del."]
+    for s in extra:
+        c.add(s, 'the ' + s + ' end', s.lower(), s.upper())
+    # embedded commands
+    for s in ['{{pitch 100}}Hello', 'Hello {{rate 200}} world', '{{Voice Female}} Hi there', '{{unclosed hello',
+              '{single} brace', '{{}}', '{{a}}', 'x{{b}}y', '{{ABC DEF}} ghi', 'a {{', 'a }} b', '{{x}}{{y}} z',
+              '{{X}} {{Y}}', '{ {not} }', 'word{{inner}}word', '{{pitch 80}}{{rate 150}}Speak.']:
+        c.add(s)
+    # long lines (> 514 chars give an empty string), and around the limit
+    base = 'The quick brown fox jumps over the lazy dog. '
+    for n in (500, 513, 514, 515, 516, 600, 1200):
+        c.add((base * 40)[:n])
+    # flags
+    sample = ['Hello, world. 12?', 'Mr. Smith paid $5.25 at 3:30.', 'Spell this: ABC 123.', '{{pitch 90}}Hi {{rate 99}} there',
+              'A.B. c.d ?x? 1.5 .5 ..', 'Is it? Yes', '? ?? ???', 'word] bracket]', 'Hola, se\u00f1or Jos\u00e9.',
+              'na\u00efve', 'x. y', '. .', 'tab\tend', 'One two three four five.']
+    for flags in ('0x00', '0x02', '0x08', '0x0a', '0x10', '0x18', '0x40', '0x48', '0x4a', '0x1a', '0x5a'):
+        c.d('#ttp ' + flags)
+        for s in sample:
+            c.add(s)
+    # spell mode (0x04): high characters loop until the buffer is full
+    for flags in ('0x04', '0x0c', '0x1c', '0x06', '0x44'):
+        c.d('#ttp ' + flags)
+        for s in sample[:8] + ['Spell 3.14 and a.b and 1.x end.', 'what? who?x ok.', '{{rate 90}}abc', '~!@#$%^&*()_+`-={}|[]\\:";\'<>,.?/']:
+            c.add(s)
+        c.d('#ttpbuf 300')
+        for s in ['caf\u00e9 au lait', '\u00e9t\u00e9', 'abc \u00f1']:
+            c.add(s)
+        c.d('#ttpbuf 0')
+    c.d('#ttp 0x08')
+    c.write()
+
+
+# ---------------------------------------------------------------- Spanish words and sentences
+ES_WORDS = '''hola adios gracias por favor buenos dias buenas noches senor senora senorita nino nina casa perro gato
+agua leche pan queso manzana naranja uva platano fresa limon arroz pollo carne pescado huevo sopa ensalada
+rojo azul verde amarillo blanco negro gris rosa morado naranja marron uno dos tres cuatro cinco seis siete
+ocho nueve diez once doce trece catorce quince dieciseis veinte treinta cuarenta cincuenta cien mil millon
+lunes martes miercoles jueves viernes sabado domingo enero febrero marzo abril mayo junio julio agosto
+septiembre octubre noviembre diciembre primavera verano otono invierno sol luna estrella cielo mar rio
+montana arbol flor hoja tierra fuego viento lluvia nieve ciudad pueblo calle escuela maestro alumno libro
+cuaderno lapiz pluma mesa silla puerta ventana cama cocina bano jardin coche tren avion barco bicicleta
+cabeza cara ojo oreja nariz boca diente mano brazo pierna pie corazon familia padre madre hermano hermana
+abuelo abuela hijo hija tio tia primo prima amigo amiga feliz triste grande pequeno alto bajo largo corto
+nuevo viejo joven bonito feo rapido lento caliente frio bueno malo mucho poco siempre nunca hoy manana
+ayer ahora despues antes aqui alli donde cuando como que quien cual porque tambien pero muy mas menos
+hablar comer beber vivir escribir leer correr saltar jugar cantar bailar dormir despertar trabajar estudiar
+querer poder tener hacer decir ir venir ver dar saber pensar llamar llegar salir volver tomar poner
+guitarra chocolate tomate patata cebolla ajo pimiento zanahoria lechuga calabaza sandia melon pina
+quetzal xilofono kilo whisky yogur zapato zorro jirafa hormiga llama llave lluvia chico chorizo
+ciencia cielo cine cerca cena gente gigante general guerra guitarra pinguino agua guapo queso quinto
+examen exito taxi mexico xavier caballo calle pollo ella ellos ese esa este esta aquel accion leccion
+cancion corazon razon jamon limon ingles frances aleman espanol japones portugues italiano ruso chino
+arbol lapiz facil dificil util azucar angel carcel huesped cesped crater dolar consul fertil fosil
+musica medico rapido pajaro arbol telefono sabado miercoles platano numero ultimo publico clasico
+espanol nino senor manana pinata ano sueno pequeno montana espana banar cana unas
+bebe cafe mama papa sofa menu tabu bambu colibri jabali rubi esqui alli asi aqui ahi mani
+pais raiz maiz baul ataud oido leido creido reir freir oir huir construir destruir
+ciudad verdad libertad universidad salud usted pared red sed virtud juventud amistad'''.split()
+
+ES_ACC = ['ni\u00f1o', 'se\u00f1or', 'ma\u00f1ana', 'a\u00f1o', 'Espa\u00f1a', 'caf\u00e9', 'mam\u00e1', 'pap\u00e1', 'sof\u00e1',
+          'men\u00fa', 'tab\u00fa', 'colibr\u00ed', 'jabal\u00ed', 'ingl\u00e9s', 'franc\u00e9s', 'alem\u00e1n', 'japon\u00e9s',
+          'canci\u00f3n', 'coraz\u00f3n', 'raz\u00f3n', 'jam\u00f3n', 'lim\u00f3n', 'acci\u00f3n', 'lecci\u00f3n', '\u00e1rbol',
+          'l\u00e1piz', 'f\u00e1cil', 'dif\u00edcil', '\u00fatil', 'az\u00facar', '\u00e1ngel', 'c\u00e1rcel', 'd\u00f3lar',
+          'm\u00fasica', 'm\u00e9dico', 'r\u00e1pido', 'p\u00e1jaro', 'tel\u00e9fono', 's\u00e1bado', 'mi\u00e9rcoles',
+          'pl\u00e1tano', 'n\u00famero', '\u00faltimo', 'p\u00fablico', 'cl\u00e1sico', 'pa\u00eds', 'ra\u00edz', 'ma\u00edz',
+          'ba\u00fal', 'ata\u00fad', 'o\u00eddo', 'le\u00eddo', 're\u00edr', 'o\u00edr', 'ping\u00fcino', 'verg\u00fcenza',
+          'cig\u00fce\u00f1a', 'ag\u00fcero', '\u00bfQu\u00e9 tal?', '\u00a1Qu\u00e9 bien!', '\u00bfC\u00f3mo est\u00e1s?',
+          '\u00c1FRICA', '\u00c9XITO', '\u00cdNDICE', '\u00d3PERA', '\u00daNICO', '\u00d1AND\u00da', 'ESPA\u00d1A',
+          'Mar\u00eda', 'Jos\u00e9', 'Ra\u00fal', 'Sof\u00eda', 'Luc\u00eda', 'Andr\u00e9s', 'Tom\u00e1s', 'Nicol\u00e1s',
+          'Mart\u00edn', 'Germ\u00e1n', 'Ram\u00f3n', 'Le\u00f3n', 'Garc\u00eda', 'Rodr\u00edguez', 'Mart\u00ednez',
+          'L\u00f3pez', 'G\u00f3mez', 'P\u00e9rez', 'S\u00e1nchez', 'Ram\u00edrez', 'Hern\u00e1ndez', 'Jim\u00e9nez',
+          'Mu\u00f1oz', 'Ib\u00e1\u00f1ez', 'Pe\u00f1a', 'Nu\u00f1ez', 'Due\u00f1as', 'Ca\u00f1as', 'Espa\u00f1ol']
+
+ES_SENTS = ['Hola, mi nombre es Juan y tengo 25 a\u00f1os.', '\u00bfC\u00f3mo te llamas?', 'Me llamo Mar\u00eda.',
+            'Buenos d\u00edas, se\u00f1ora Garc\u00eda.', 'El perro come carne y el gato bebe leche.',
+            'Vamos a la playa ma\u00f1ana por la tarde.', 'La casa de mi abuela es muy grande.',
+            '\u00bfD\u00f3nde est\u00e1 el ba\u00f1o, por favor?', 'Quiero un caf\u00e9 con leche y az\u00facar.',
+            'Los ni\u00f1os juegan en el jard\u00edn.', 'Hace mucho fr\u00edo en invierno.',
+            'Mi hermano estudia ingl\u00e9s y franc\u00e9s en la universidad.', 'El tren sale a las ocho y media.',
+            'Espa\u00f1a, M\u00e9xico y Argentina hablan espa\u00f1ol.', 'La lecci\u00f3n de hoy es muy f\u00e1cil.',
+            'Ella canta una canci\u00f3n de amor.', 'Nosotros vivimos en la ciudad de Guadalajara.',
+            'Ll\u00e1mame cuando llegues a casa.', 'El ping\u00fcino vive en el hielo.',
+            'Guillermo y Gilberto son guapos.', 'Quince quesos y quince quetzales.', 'Xochimilco y Oaxaca est\u00e1n en M\u00e9xico.',
+            'Rosa y Ricardo corren r\u00e1pido por la carretera.', 'Yo y \u00e9l, t\u00fa y yo.', 'Hay un buey en la v\u00eda.',
+            'Pedro, Pablo y Paco.', 'Jorge juega con Josefina.', 'Ch\u00e1vez, Ch\u00e1vez, chocolate y churros.',
+            'Lluvia, llave, lleno, llorar.', '\u00a1Feliz cumplea\u00f1os!', 'Gracias. De nada.', 'Adi\u00f3s, hasta luego.',
+            'S\u00ed, no, tal vez.', 'Uno, dos, tres, cuatro, cinco.', 'El Dr. P\u00e9rez y la Sra. L\u00f3pez.',
+            'Kil\u00f3metro, kiosco, whisky, wat.', 'Zapato, zorro, zona, zumo.', 'cielo, cereza, cine, cocina, cuna.',
+            'gato, gente, gigante, gota, gusano.', 'Ahora mismo, ah\u00ed, aqu\u00ed.', 'Construir, destruir, huir.',
+            'Ciudad, verdad, libertad, salud.', 'r\u00edo, mi\u00e9rcoles, agua, cuidado, viuda, ruido.']
+
+
+def build_spanish():
+    c = Corpus('es_text', 'es')
+    for w in ES_WORDS:
+        c.add(w, w.upper(), w.capitalize())
+    for w in ES_ACC:
+        c.add(w, w.upper(), w.lower())
+    for s in ES_SENTS:
+        c.add(s)
+    for _ in range(400):
+        c.add(' '.join(rng.choice(ES_WORDS + ES_ACC) for _ in range(rng.randint(2, 8))) + rng.choice(['.', '?', '!', ',', '']))
+    syl_c = ['b', 'c', 'ch', 'd', 'f', 'g', 'gu', 'j', 'l', 'll', 'm', 'n', '\u00f1', 'p', 'qu', 'r', 'rr', 's', 't', 'v',
+             'x', 'y', 'z', 'br', 'cr', 'dr', 'fl', 'gr', 'pl', 'tr', '']
+    syl_v = ['a', 'e', 'i', 'o', 'u', 'ai', 'ei', 'oi', 'au', 'ue', 'ie', 'ia', 'io', 'ua', 'uo', '\u00e1', '\u00e9',
+             '\u00ed', '\u00f3', '\u00fa', '\u00fc']
+    syl_e = ['', '', '', 'n', 's', 'r', 'l', 'd', 'z']
+    for _ in range(1200):
+        w = ''.join(rng.choice(syl_c) + rng.choice(syl_v) for _ in range(rng.randint(1, 4))) + rng.choice(syl_e)
+        c.add(w)
+    # English words through the Spanish rules
+    for w in ['hello', 'world', 'computer', 'Microsoft', 'weekend', 'show', 'jazz', 'rock', 'thanks', 'night']:
+        c.add(w)
+    c.write()
+
+
+# ---------------------------------------------------------------- output buffer overflow
+def build_buffers():
+    c = Corpus('buf')
+    texts = {
+        'en': ['Hello world, this is a test of the output buffer.', 'It costs $1,234.56 at 3:30 on 12/25/96, call 555-1212.',
+               'Mr. Smith said "hello" (twice) and left?', 'about 5 million people and 50% of 1996',
+               '{{pitch 90}}Hi {{rate 120}} there friend.', 'a b c d e f g h i j k l m n o p',
+               'supercalifragilisticexpialidocious antidisestablishmentarianism'],
+        'es': ['Hola, mi nombre es Juan y tengo 25 a\u00f1os.', 'Cuesta $1,234.56 a las 3:30 del 12/25/96.',
+               'El ni\u00f1o come pan y la ni\u00f1a bebe agua.', 'unos 5 millon de personas y el 50% de 1996'],
+    }
+    for lang, ts in texts.items():
+        c.d('#lang ' + lang)
+        for flags in ('0x08', '0x00', '0x18', '0x02', '0x0c', '0x04'):
+            c.d('#ttp ' + flags)
+            for t in ts:
+                for n in range(8, 160):
+                    if n > 60 and n % 3:
+                        continue
+                    c.d('#ttpbuf %d' % n)
+                    c.add(t)
+    c.d('#lang en')
+    c.d('#ttp 0x08')
+    # long inputs that overflow a mid-sized buffer
+    for n in (200, 400, 1000, 2000):
+        c.d('#ttpbuf %d' % n)
+        c.add(('The quick brown fox jumps over the lazy dog 1234 times. ' * 10)[:510])
+    c.d('#ttpbuf 0')
+    c.write()
+
+
+def main():
+    os.makedirs(CORPUS, exist_ok=True)
+    words = build_dict()
+    build_lts('en', words)
+    build_lts('es', words)
+    build_numbers('en')
+    build_numbers('es')
+    build_misc('en')
+    build_misc('es')
+    build_spanish()
+    build_buffers()
+
+
+if __name__ == '__main__':
+    main()

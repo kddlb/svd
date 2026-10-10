@@ -1,0 +1,36 @@
+; Import definitions for TIBASE32.DLL (SoftVoice, Talk It! 1.0.0.1117)
+; Generated from the DLL export table. Imports are by ordinal because the DLL
+; exports the raw decorated names (_SVAbort@4), which lib.exe cannot express.
+; lib /def:tibase32.def /machine:x86 /out:tibase32.lib
+LIBRARY TIBASE32.dll
+EXPORTS
+    SVAbort@4                      @1 NONAME
+    SVCloseSpeech@4                @2 NONAME
+    SVGetAvailableLanguages@8      @3 NONAME
+    SVGetErrorText@12              @4 NONAME
+    SVGetVersionInfo@4             @5 NONAME
+    SVGetVoiceInfo@16              @6 NONAME
+    SVLoadUserDictionary@8         @7 NONAME
+    SVNarrate@20                   @8 NONAME
+    SVOpenSpeech@20                @9 NONAME
+    SVPause@4                      @10 NONAME
+    SVResume@4                     @11 NONAME
+    SVSetAFBias@8                  @12 NONAME
+    SVSetAHBias@8                  @13 NONAME
+    SVSetAVBias@8                  @14 NONAME
+    SVSetF0Perturb@8               @15 NONAME
+    SVSetF0Range@8                 @16 NONAME
+    SVSetF0Style@8                 @17 NONAME
+    SVSetGender@8                  @18 NONAME
+    SVSetGlottalSource@8           @19 NONAME
+    SVSetLanguage@8                @20 NONAME
+    SVSetPersonality@8             @21 NONAME
+    SVSetPitch@8                   @22 NONAME
+    SVSetRate@8                    @23 NONAME
+    SVSetSpeakingMode@8            @24 NONAME
+    SVSetVoiceInfo@12              @25 NONAME
+    SVSetVoicingMode@8             @26 NONAME
+    SVSetVowelFactor@8             @27 NONAME
+    SVTTS@32                       @28 NONAME
+    SVTextToPhon@24                @29 NONAME
+    SVUnloadUserDictionary@8       @30 NONAME

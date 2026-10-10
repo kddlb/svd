@@ -1,0 +1,20 @@
+# Smoke corpus: a few cases per feature.
+#lang en
+#stages 1
+Hello, world.
+I am a talking computer from 1996!
+Is it raining? Yes, it is.
+#voice 9
+I am Robotoid.
+#voice 1
+#rate 250
+The quick brown fox jumps over the lazy dog.
+#rate 0
+#voice 0
+#mode phon
+{f0style sing; c4} LAA5 {e4} LAA5 {g4} LAA5 {c5} LAA5.
+/HEH5LOW {voicing whispered} WER5LD.
+#mode text
+#lang es
+Hola señor, ¿cómo está usted?
+Mañana llueve en Jerez.

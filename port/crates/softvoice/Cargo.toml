@@ -1,0 +1,10 @@
+[package]
+name = "softvoice"
+description = "Bit-exact Rust port of the SoftVoice text-to-speech engine from Talk It! (1996)"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+golden = { path = "../golden" }
