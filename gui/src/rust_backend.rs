@@ -1,4 +1,5 @@
-//! Backend on the Rust port of the engine, playing through cpal.
+//! Backend on the Rust port of the engine, playing through cpal (WebAudio
+//! in the browser).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -7,7 +8,7 @@ use std::sync::Arc;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use softvoice::engine::{self, Engine, Language};
 
-use crate::backend::{write_wav, Backend, Lang, Param, Sync, Voice};
+use crate::backend::{wav_bytes, write_wav, Backend, Lang, Param, Sync, Voice};
 
 const RATE: u32 = 11025;
 /// Narrate flags: mouth-shape events (word events are always on).
@@ -47,6 +48,13 @@ impl RustBackend {
     }
 }
 
+fn log_error(msg: &str) {
+    #[cfg(target_arch = "wasm32")]
+    web_sys::console::error_1(&format!("audio error: {msg}").into());
+    #[cfg(not(target_arch = "wasm32"))]
+    eprintln!("audio error: {msg}");
+}
+
 /// Play an utterance: the hi-fi 16-bit stream, resampled to the device.
 fn open_stream(utt: &engine::Utterance) -> Result<(cpal::Stream, Arc<Shared>, u32), String> {
     let host = cpal::default_host();
@@ -76,7 +84,7 @@ fn open_stream(utt: &engine::Utterance) -> Result<(cpal::Stream, Arc<Shared>, u3
                         fill(&mut |v| f.fill(v));
                     }
                 },
-                |e| eprintln!("audio error: {e}"),
+                |e| log_error(&e.to_string()),
                 None,
             )
         }
@@ -89,7 +97,7 @@ fn open_stream(utt: &engine::Utterance) -> Result<(cpal::Stream, Arc<Shared>, u3
                         fill(&mut |v| f.fill((v * 32767.0) as i16));
                     }
                 },
-                |e| eprintln!("audio error: {e}"),
+                |e| log_error(&e.to_string()),
                 None,
             )
         }
@@ -177,6 +185,10 @@ impl Backend for RustBackend {
         let utt = self.synthesize(phonemes)?;
         write_wav(path, &utt.pcm).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(format!("Saved {} ({:.2} s)", path.display(), utt.pcm.len() as f32 / RATE as f32))
+    }
+
+    fn render_wav(&mut self, phonemes: &str) -> Option<Result<Vec<u8>, String>> {
+        Some(self.synthesize(phonemes).map(|utt| wav_bytes(&utt.pcm)))
     }
 
     fn save_plays_audio(&self) -> bool {

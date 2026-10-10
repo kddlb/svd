@@ -1,6 +1,7 @@
 //! svgui - an egui front end for the SoftVoice engine from "Talk It!".
 //! Runs on the Rust port; 32-bit builds can also drive the original DLLs
-//! for side-by-side comparison.
+//! for side-by-side comparison, and it also runs in the browser (WebAssembly,
+//! `trunk build --release`).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod backend;
@@ -146,6 +147,24 @@ impl App {
         }
     }
 
+    /// On the web: render and offer the WAV as a download.
+    #[cfg(target_arch = "wasm32")]
+    fn save_wav(&mut self) {
+        let Some(phon) = self.phonemes() else { return };
+        match self.backend().render_wav(&phon) {
+            Some(Ok(wav)) => {
+                let secs = (wav.len() - 44) as f32 / 11025.0;
+                self.status = match web::download(&wav, "speech.wav", "audio/wav") {
+                    Ok(()) => format!("Downloaded speech.wav ({secs:.2} s)"),
+                    Err(e) => e,
+                };
+            }
+            Some(Err(e)) => self.status = e,
+            None => self.status = "This engine can't render WAV files".into(),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn save_wav(&mut self) {
         let Some(path) = rfd::FileDialog::new().add_filter("WAV audio", &["wav"]).set_file_name("speech.wav").save_file() else {
             return;
@@ -460,6 +479,48 @@ fn highlighted(ui: &egui::Ui, text: &str, word: Option<(usize, usize)>) -> Layou
     job
 }
 
+#[cfg(target_arch = "wasm32")]
+mod web {
+    use wasm_bindgen::JsCast;
+
+    /// Offer `data` as a file download.
+    pub fn download(data: &[u8], name: &str, mime: &str) -> Result<(), String> {
+        let err = |e: wasm_bindgen::JsValue| format!("download failed: {e:?}");
+        let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(data));
+        let opts = web_sys::BlobPropertyBag::new();
+        opts.set_type(mime);
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(err)?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(err)?;
+        let doc = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+        let a: web_sys::HtmlAnchorElement = doc.create_element("a").map_err(err)?.unchecked_into();
+        a.set_href(&url);
+        a.set_download(name);
+        a.click();
+        web_sys::Url::revoke_object_url(&url).map_err(err)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    use wasm_bindgen::JsCast;
+    wasm_bindgen_futures::spawn_local(async {
+        let doc = web_sys::window().and_then(|w| w.document()).expect("no document");
+        let canvas = doc
+            .get_element_by_id("svgui")
+            .expect("no #svgui canvas")
+            .dyn_into::<web_sys::HtmlCanvasElement>()
+            .expect("#svgui is not a canvas");
+        let start = eframe::WebRunner::new()
+            .start(canvas, eframe::WebOptions::default(), Box::new(|cc| Ok(Box::new(App::new(cc)))))
+            .await;
+        if let Err(e) = start {
+            web_sys::console::error_1(&e);
+        }
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()

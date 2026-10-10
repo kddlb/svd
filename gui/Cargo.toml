@@ -5,9 +5,19 @@ edition = "2024"
 
 [dependencies]
 eframe = "0.36"
-rfd = "0.17.2"
 cpal = "0.18"
 softvoice = { path = "../port/crates/softvoice" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rfd = "0.17.2"
+
+# The web build (trunk build --release): WebAudio through cpal, WAV downloads.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+cpal = { version = "0.18", features = ["wasm-bindgen"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = ["console", "Window", "Document", "Element", "HtmlCanvasElement", "HtmlAnchorElement", "Blob", "BlobPropertyBag", "Url"] }
 
 # The original-DLL backend (for comparison) only exists in 32-bit builds:
 #   cargo build --release --target i686-pc-windows-msvc

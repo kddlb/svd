@@ -1,0 +1,3 @@
+[build]
+# Relative asset URLs, so dist/ can be served from any folder.
+public_url = "./"

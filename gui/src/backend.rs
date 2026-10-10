@@ -100,8 +100,15 @@ pub trait Backend {
     fn text_to_phonemes(&mut self, text: &str) -> Result<String, String>;
     /// Start speaking (asynchronous); events arrive through `poll`.
     fn speak(&mut self, phonemes: &str) -> Result<(), String>;
-    /// Render to a WAV file.  Returns a status line.
+    /// Render to a WAV file.  Returns a status line.  (Native only.)
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn save_wav(&mut self, phonemes: &str, path: &Path) -> Result<String, String>;
+    /// Render to WAV file bytes without playing (used on the web, where the
+    /// file is offered as a download).  `None` if the backend can't.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    fn render_wav(&mut self, _phonemes: &str) -> Option<Result<Vec<u8>, String>> {
+        None
+    }
     /// Whether `save_wav` plays the audio while recording.
     fn save_plays_audio(&self) -> bool;
     fn stop(&mut self);
@@ -112,7 +119,13 @@ pub trait Backend {
 }
 
 /// 8-bit unsigned mono PCM at 11025 Hz to a WAV file.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn write_wav(path: &Path, pcm: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, wav_bytes(pcm))
+}
+
+/// 8-bit unsigned mono PCM at 11025 Hz as WAV file bytes.
+pub fn wav_bytes(pcm: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(44 + pcm.len());
     let len = pcm.len() as u32;
     out.extend_from_slice(b"RIFF");
@@ -128,5 +141,5 @@ pub fn write_wav(path: &Path, pcm: &[u8]) -> std::io::Result<()> {
     out.extend_from_slice(b"data");
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(pcm);
-    std::fs::write(path, out)
+    out
 }

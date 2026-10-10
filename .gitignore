@@ -18,3 +18,4 @@ port/golden/*.svg
 
 # Audio renders
 *.wav
+gui/dist/

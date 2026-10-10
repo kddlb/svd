@@ -79,9 +79,17 @@ fn text_to_phon() {
         }
     }
     assert!(!jobs.is_empty(), "no ttp* golden files");
-    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+    // WebAssembly (wasm32-wasip1) has no threads, and panics abort.
+    let threads = if cfg!(target_family = "wasm") {
+        1
+    } else {
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+    };
     let chunk = jobs.len().div_ceil(threads);
-    let mut failures: Vec<String> = std::thread::scope(|sc| {
+    let mut failures: Vec<String> = if threads == 1 {
+        jobs.iter().filter_map(|j| run(j).err()).collect()
+    } else {
+        std::thread::scope(|sc| {
         let hs: Vec<_> = jobs
             .chunks(chunk)
             .map(|part| {
@@ -97,7 +105,8 @@ fn text_to_phon() {
             })
             .collect();
         hs.into_iter().flat_map(|h| h.join().unwrap()).collect()
-    });
+        })
+    };
     failures.sort();
     let shown: Vec<_> = failures.iter().take(30).cloned().collect();
     assert!(failures.is_empty(), "{} of {} cases differ:\n{}", failures.len(), jobs.len(), shown.join("\n"));

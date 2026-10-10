@@ -135,16 +135,34 @@ pub fn read(path: &Path) -> std::io::Result<Vec<Case>> {
     Ok(cases)
 }
 
-/// `port/golden`, relative to a crate manifest directory two levels down.
+/// `port/golden`, or `$SOFTVOICE_GOLDEN_DIR` if set (used when the tests run
+/// as WebAssembly under a WASI runtime, which sees only preopened folders).
 pub fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../golden")
+    match std::env::var_os("SOFTVOICE_GOLDEN_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../golden"),
+    }
 }
 
 /// All golden files present (sorted), so tests run on whatever was generated.
+/// `$SOFTVOICE_GOLDEN_ONLY` (comma-separated name substrings) narrows the set.
 pub fn files() -> Vec<PathBuf> {
-    let mut v: Vec<_> = std::fs::read_dir(dir())
-        .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "svg")).collect())
+    let only: Vec<String> = std::env::var("SOFTVOICE_GOLDEN_ONLY")
+        .map(|v| v.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect())
         .unwrap_or_default();
+    // Some WASI runtimes (Node on Windows) can't list directories; the runner
+    // then passes the names in `$SOFTVOICE_GOLDEN_FILES`.
+    let mut v: Vec<_> = match std::env::var("SOFTVOICE_GOLDEN_FILES") {
+        Ok(names) => names.split(',').filter(|s| !s.is_empty()).map(|n| dir().join(n)).collect(),
+        Err(_) => std::fs::read_dir(dir())
+            .map(|rd| rd.filter_map(|e| e.ok().map(|e| e.path())).collect())
+            .unwrap_or_default(),
+    };
+    v.retain(|p: &PathBuf| p.extension().is_some_and(|x| x == "svg"));
+    v.retain(|p: &PathBuf| {
+        let name = p.file_name().unwrap().to_string_lossy();
+        only.is_empty() || only.iter().any(|o| name.contains(o.as_str()))
+    });
     v.sort();
     v
 }
