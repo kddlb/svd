@@ -7,6 +7,7 @@
 mod backend;
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll;
+mod palette;
 mod rust_backend;
 
 use std::collections::VecDeque;
@@ -22,6 +23,16 @@ const GLOTTAL: &[&str] = &["Default", "Male", "Female", "Child", "High", "Mellow
 const VOICING: &[&str] = &["Normal", "Breathy", "Whispered"];
 const F0_STYLES: &[&str] = &["Natural", "Style 2", "Monotone", "Sing", "Random"];
 
+const TEXT_ID: &str = "text_edit";
+const PHON_ID: &str = "phon_edit";
+
+/// Which editor the command palette inserts into.
+#[derive(Clone, Copy, PartialEq)]
+enum Target {
+    Text,
+    Phonemes,
+}
+
 struct App {
     backends: Vec<Box<dyn Backend>>,
     active: usize,
@@ -29,6 +40,10 @@ struct App {
     text: String,
     phon_text: String,
     speak_phonemes: bool,
+
+    palette: palette::Palette,
+    show_palette: bool,
+    target: Target,
 
     language: Lang,
     presets: Vec<String>,
@@ -61,6 +76,9 @@ impl App {
             text: "Hello! I am a talking computer from 1996.".into(),
             phon_text: " @w0  /HEH5LOW! @w7  AY3 @w9  )AEM @w12  AX @w14  TAO4KIHNX @w22  KUMPYUW4TER @w31  FRUM @w36   NAY5NTIY1N NAY2NDIY SIH5KS .".into(),
             speak_phonemes: false,
+            palette: palette::Palette::default(),
+            show_palette: true,
+            target: Target::Text,
             language: Lang::English,
             presets: Vec::new(),
             preset: 0,
@@ -325,6 +343,32 @@ impl App {
         ui.weak("Changes apply to the next utterance.");
     }
 
+    fn palette_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Commands");
+        // The text editor is disabled while speaking phonemes as written.
+        let target = if self.speak_phonemes { Target::Phonemes } else { self.target };
+        ui.horizontal(|ui| {
+            ui.label("Insert into");
+            let mut t = target;
+            ui.add_enabled_ui(!self.speak_phonemes, |ui| ui.selectable_value(&mut t, Target::Text, "Text"));
+            ui.selectable_value(&mut t, Target::Phonemes, "Phonemes");
+            self.target = t;
+        });
+        ui.weak("Click a command to insert it at the cursor. It applies from the next phoneme on. In text, commands are written {{...}}.");
+        ui.add_space(4.0);
+        if let Some(snippet) = self.palette.ui(ui) {
+            let ctx = ui.ctx().clone();
+            let snippet = match target {
+                // Text to phonemes only passes "{{command}}" through (as
+                // "{command}"); single braces are read aloud.
+                Target::Text => palette::insert_at_cursor(&ctx, egui::Id::new(TEXT_ID), &mut self.text, &format!("{{{snippet}}}"), true),
+                Target::Phonemes => palette::insert_at_cursor(&ctx, egui::Id::new(PHON_ID), &mut self.phon_text, &snippet, false),
+            };
+            self.target = target;
+            self.status = format!("Inserted {snippet}");
+        }
+    }
+
     fn main_panel(&mut self, ui: &mut egui::Ui) {
         let ctrl_enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
 
@@ -334,7 +378,10 @@ impl App {
             .desired_rows(5)
             .desired_width(f32::INFINITY)
             .hint_text("Type something to say...");
-        ui.add_enabled(!self.speak_phonemes, edit);
+        let edit = edit.id(egui::Id::new(TEXT_ID));
+        if ui.add_enabled(!self.speak_phonemes, edit).has_focus() {
+            self.target = Target::Text;
+        }
 
         let speaking = self.speaking;
         ui.horizontal(|ui| {
@@ -362,6 +409,7 @@ impl App {
             }
             ui.separator();
             ui.checkbox(&mut self.speak_phonemes, "Speak phonemes as written");
+            ui.toggle_value(&mut self.show_palette, "{ } Commands").on_hover_text("Show the embedded-command palette");
         });
 
         ui.add_space(8.0);
@@ -398,7 +446,10 @@ impl App {
                 ui.weak("ARPAbet-style codes, stress 1-9 after vowels, {commands} allowed");
             });
             egui::ScrollArea::vertical().id_salt("phon").max_height(140.0).show(ui, |ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.phon_text).code_editor().desired_rows(4).desired_width(f32::INFINITY));
+                let edit = egui::TextEdit::multiline(&mut self.phon_text).id(egui::Id::new(PHON_ID)).code_editor().desired_rows(4).desired_width(f32::INFINITY);
+                if ui.add(edit).has_focus() {
+                    self.target = Target::Phonemes;
+                }
             });
         });
 
@@ -430,6 +481,11 @@ impl eframe::App for App {
         egui::Panel::left("voice").resizable(false).default_size(280.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.voice_panel(ui));
         });
+        if self.show_palette {
+            egui::Panel::right("palette").resizable(true).default_size(300.0).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| self.palette_panel(ui));
+            });
+        }
         egui::CentralPanel::default().show(ui, |ui| self.main_panel(ui));
     }
 }
@@ -525,7 +581,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SoftVoice — Talk It! engine")
-            .with_inner_size([960.0, 680.0])
+            .with_inner_size([1260.0, 720.0])
             .with_min_inner_size([700.0, 480.0]),
         ..Default::default()
     };

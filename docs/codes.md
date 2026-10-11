@@ -91,8 +91,11 @@ The exceptions are `mod`, `vibrato`, `tremelo` and `tonelo`. Nothing resets
 them, so on a long-lived engine they carry over into later utterances.
 *(code)*
 
-`SVTextToPhon` passes `{...}` groups through unchanged, but only the English
-rules do so. The Spanish rules read the text inside the braces aloud.
+In **text**, write commands with doubled braces: `SVTextToPhon` turns
+`{{pitch 200}}` into `{pitch 200}` (lower-cased) in both languages, while a
+single-brace `{pitch 200}` is read aloud as words. The `{{` must follow a
+space (or start the text), otherwise it is read aloud too; and a word glued
+right after the `}}` loses its `@w` word marker.
 
 ### Command table
 
