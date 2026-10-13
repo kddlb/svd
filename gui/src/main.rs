@@ -8,7 +8,9 @@ mod backend;
 #[cfg(all(windows, target_arch = "x86"))]
 mod dll;
 mod palette;
+mod query;
 mod rust_backend;
+mod theme;
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -16,7 +18,9 @@ use std::time::Duration;
 use backend::{Backend, Lang, Param, Sync, Voice};
 use eframe::egui;
 use egui::text::LayoutJob;
-use egui::{Color32, FontId, RichText, TextFormat};
+use egui::{FontId, RichText, TextFormat};
+
+const DEFAULT_TEXT: &str = "Hello! I am a talking computer from 1996.";
 
 const GENDERS: &[&str] = &["Male", "Female", "Child", "Giant"];
 const GLOTTAL: &[&str] = &["Default", "Male", "Female", "Child", "High", "Mellow", "Impulse", "Odd", "Colossus"];
@@ -49,6 +53,8 @@ struct App {
     presets: Vec<String>,
     preset: u16,
     voice: Voice,
+    /// The voice as the preset left it, before the sliders.
+    preset_voice: Voice,
 
     speaking: bool,
     spoken_text: String,
@@ -57,23 +63,28 @@ struct App {
     mouth: Option<u16>,
     log: VecDeque<String>,
     status: String,
+    motion: theme::Motion,
+    /// The query last written to the address bar.
+    #[cfg(target_arch = "wasm32")]
+    url_pairs: Vec<(&'static str, String)>,
 }
 
 impl App {
-    fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let motion = theme::install(&cc.egui_ctx);
         #[allow(unused_mut)]
         let mut backends: Vec<Box<dyn Backend>> = vec![Box::new(rust_backend::RustBackend::new())];
         #[allow(unused_mut)]
         let mut status = "Ready".to_string();
         #[cfg(all(windows, target_arch = "x86"))]
-        match dll::DllBackend::open(&_cc.egui_ctx) {
+        match dll::DllBackend::open(&cc.egui_ctx) {
             Ok(b) => backends.push(Box::new(b)),
             Err(e) => status = format!("Original DLLs unavailable: {e}"),
         }
         let mut app = App {
             backends,
             active: 0,
-            text: "Hello! I am a talking computer from 1996.".into(),
+            text: DEFAULT_TEXT.into(),
             phon_text: " @w0  /HEH5LOW! @w7  AY3 @w9  )AEM @w12  AX @w14  TAO4KIHNX @w22  KUMPYUW4TER @w31  FRUM @w36   NAY5NTIY1N NAY2NDIY SIH5KS .".into(),
             speak_phonemes: false,
             palette: palette::Palette::default(),
@@ -83,6 +94,7 @@ impl App {
             presets: Vec::new(),
             preset: 0,
             voice: Voice::default(),
+            preset_voice: Voice::default(),
             speaking: false,
             spoken_text: String::new(),
             paused: false,
@@ -90,8 +102,13 @@ impl App {
             mouth: None,
             log: VecDeque::new(),
             status,
+            motion,
+            #[cfg(target_arch = "wasm32")]
+            url_pairs: Vec::new(),
         };
         app.activate(0);
+        #[cfg(target_arch = "wasm32")]
+        app.apply_page_query();
         app
     }
 
@@ -118,6 +135,7 @@ impl App {
             Ok(v) => {
                 self.preset = preset;
                 self.voice = v;
+                self.preset_voice = v;
             }
             Err(e) => self.status = e,
         }
@@ -257,8 +275,7 @@ impl App {
     // ---- UI ---------------------------------------------------------------
 
     fn voice_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Voice");
-        ui.add_space(4.0);
+        theme::section(ui, "Voice");
         let langs = self.backend().languages();
         egui::Grid::new("voice_grid").num_columns(2).spacing([8.0, 6.0]).show(ui, |ui| {
             if self.backends.len() > 1 {
@@ -319,7 +336,7 @@ impl App {
         ui.separator();
         let mut v = self.voice;
         let mut changes: Vec<(Param, i32)> = Vec::new();
-        ui.label(RichText::new("Prosody").strong());
+        theme::section(ui, "Prosody");
         if slider_u16(ui, "Pitch (Hz)", &mut v.pitch, 10..=2000, true) { changes.push((Param::Pitch, v.pitch as i32)); }
         if slider_u16(ui, "Rate (wpm)", &mut v.rate, 20..=500, false) { changes.push((Param::Rate, v.rate as i32)); }
         if combo(ui, "F0 style", &mut v.f0_style, F0_STYLES) { changes.push((Param::F0Style, v.f0_style as i32)); }
@@ -328,7 +345,7 @@ impl App {
         if slider_u16(ui, "Vowel length %", &mut v.vowel_factor, 30..=300, false) { changes.push((Param::VowelFactor, v.vowel_factor as i32)); }
 
         ui.add_space(6.0);
-        ui.label(RichText::new("Voice quality").strong());
+        theme::section(ui, "Voice quality");
         if combo(ui, "Gender", &mut v.gender, GENDERS) { changes.push((Param::Gender, v.gender as i32)); }
         if combo(ui, "Glottal source", &mut v.glottal_source, GLOTTAL) { changes.push((Param::GlottalSource, v.glottal_source as i32)); }
         if combo(ui, "Voicing", &mut v.voicing_mode, VOICING) { changes.push((Param::VoicingMode, v.voicing_mode as i32)); }
@@ -344,7 +361,7 @@ impl App {
     }
 
     fn palette_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Commands");
+        theme::section(ui, "Commands");
         // The text editor is disabled while speaking phonemes as written.
         let target = if self.speak_phonemes { Target::Phonemes } else { self.target };
         ui.horizontal(|ui| {
@@ -372,7 +389,7 @@ impl App {
     fn main_panel(&mut self, ui: &mut egui::Ui) {
         let ctrl_enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
 
-        ui.heading("Text");
+        theme::section(ui, "Text");
         let edit = egui::TextEdit::multiline(&mut self.text)
             .font(FontId::proportional(18.0))
             .desired_rows(5)
@@ -385,14 +402,14 @@ impl App {
 
         let speaking = self.speaking;
         ui.horizontal(|ui| {
-            if ui.button(RichText::new("▶ Speak").size(16.0)).on_hover_text("Ctrl+Enter").clicked() || ctrl_enter {
+            if ui.add(theme::primary_button("Speak")).on_hover_text("Ctrl+Enter").clicked() || ctrl_enter {
                 self.speak();
             }
-            if ui.add_enabled(speaking, egui::Button::new(RichText::new("⏹ Stop").size(16.0))).clicked() {
+            if ui.add_enabled(speaking, egui::Button::new("Stop")).clicked() {
                 self.stop();
             }
-            let label = if self.paused { "▶ Resume" } else { "⏸ Pause" };
-            if ui.add_enabled(speaking, egui::Button::new(RichText::new(label).size(16.0))).clicked() {
+            let label = if self.paused { "Resume" } else { "Pause" };
+            if ui.add_enabled(speaking, egui::Button::new(label)).clicked() {
                 let r = if self.paused { self.backend().resume() } else { self.backend().pause() };
                 match r {
                     Ok(()) => self.paused = !self.paused,
@@ -404,12 +421,12 @@ impl App {
             } else {
                 "Render to an 11025 Hz 8-bit WAV file (silently)"
             };
-            if ui.button(RichText::new("💾 Save WAV…").size(16.0)).on_hover_text(hint).clicked() {
+            if ui.button("Save WAV…").on_hover_text(hint).clicked() {
                 self.save_wav();
             }
             ui.separator();
             ui.checkbox(&mut self.speak_phonemes, "Speak phonemes as written");
-            ui.toggle_value(&mut self.show_palette, "{ } Commands").on_hover_text("Show the embedded-command palette");
+            ui.toggle_value(&mut self.show_palette, "Commands").on_hover_text("Show the embedded-command palette");
         });
 
         ui.add_space(8.0);
@@ -429,7 +446,7 @@ impl App {
                 for id in 1..=9u16 {
                     let text = RichText::new(format!(" {id} ")).monospace();
                     ui.label(if self.mouth == Some(id) {
-                        text.background_color(ui.visuals().selection.bg_fill).color(Color32::WHITE)
+                        text.background_color(ui.visuals().selection.bg_fill).color(ui.visuals().selection.stroke.color)
                     } else {
                         text.weak()
                     });
@@ -446,7 +463,13 @@ impl App {
                 ui.weak("ARPAbet-style codes, stress 1-9 after vowels, {commands} allowed");
             });
             egui::ScrollArea::vertical().id_salt("phon").max_height(140.0).show(ui, |ui| {
-                let edit = egui::TextEdit::multiline(&mut self.phon_text).id(egui::Id::new(PHON_ID)).code_editor().desired_rows(4).desired_width(f32::INFINITY);
+                let edit = egui::TextEdit::multiline(&mut self.phon_text)
+                    .id(egui::Id::new(PHON_ID))
+                    .code_editor()
+                    .background_color(theme::CODE_BG)
+                    .text_color(theme::CODE_TEXT)
+                    .desired_rows(4)
+                    .desired_width(f32::INFINITY);
                 if ui.add(edit).has_focus() {
                     self.target = Target::Phonemes;
                 }
@@ -454,10 +477,13 @@ impl App {
         });
 
         egui::CollapsingHeader::new(format!("Sync events ({})", self.log.len())).show(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("log").max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
-                for line in &self.log {
-                    ui.monospace(line);
-                }
+            theme::code_frame().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                egui::ScrollArea::vertical().id_salt("log").max_height(180.0).stick_to_bottom(true).show(ui, |ui| {
+                    for line in &self.log {
+                        ui.label(RichText::new(line).monospace().color(theme::CODE_TEXT));
+                    }
+                });
             });
         });
     }
@@ -466,6 +492,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.handle_events();
+        ui.set_opacity(self.motion.entrance(ui.ctx()));
         if self.speaking {
             ui.ctx().request_repaint_after(Duration::from_millis(15));
         }
@@ -478,7 +505,7 @@ impl eframe::App for App {
                 });
             });
         });
-        egui::Panel::left("voice").resizable(false).default_size(280.0).show(ui, |ui| {
+        egui::Panel::left("voice").resizable(false).default_size(300.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.voice_panel(ui));
         });
         if self.show_palette {
@@ -487,6 +514,8 @@ impl eframe::App for App {
             });
         }
         egui::CentralPanel::default().show(ui, |ui| self.main_panel(ui));
+        #[cfg(target_arch = "wasm32")]
+        self.sync_url();
     }
 }
 
@@ -521,7 +550,7 @@ fn word_range(text: &str, start: usize) -> Option<(usize, usize)> {
 
 fn highlighted(ui: &egui::Ui, text: &str, word: Option<(usize, usize)>) -> LayoutJob {
     let normal = TextFormat { font_id: FontId::proportional(20.0), color: ui.visuals().text_color(), ..Default::default() };
-    let strong = TextFormat { background: ui.visuals().selection.bg_fill, color: Color32::WHITE, ..normal.clone() };
+    let strong = TextFormat { background: ui.visuals().selection.bg_fill, color: ui.visuals().selection.stroke.color, ..normal.clone() };
     let mut job = LayoutJob::default();
     job.wrap.max_width = ui.available_width();
     match word {

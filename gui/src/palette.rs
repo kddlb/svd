@@ -132,7 +132,7 @@ impl Palette {
         let mut out = None;
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.use_pos, "At")
-                .on_hover_text("Add a position: the command takes effect this many ms into the following phoneme (only commands marked ⏱).");
+                .on_hover_text("Add a position: the command takes effect this many ms into the following phoneme (only commands marked +ms).");
             ui.add_enabled(self.use_pos, egui::DragValue::new(&mut self.pos).range(0..=5000).suffix(" ms"));
         });
         ui.add_space(4.0);
@@ -153,7 +153,7 @@ impl Palette {
                     for cmd in *cmds {
                         let st = self.args.entry(cmd.name).or_insert_with(|| initial(cmd));
                         let snippet = snippet(cmd, st, self.use_pos.then_some(self.pos));
-                        let label = if cmd.pos { format!("{} ⏱", cmd.name) } else { cmd.name.to_string() };
+                        let label = if cmd.pos { format!("{} +ms", cmd.name) } else { cmd.name.to_string() };
                         let hover = format!("{}\n\nInserts {snippet}", cmd.help);
                         if ui.button(RichText::new(label).monospace()).on_hover_text(hover).clicked() {
                             out = Some(snippet);

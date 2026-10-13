@@ -37,8 +37,7 @@ contains none of their bytes. To build anything, put `tibase32.dll`,
   `svsay` and `svgui` run without the DLLs present.
 - **Built binaries therefore contain Microsoft/SoftVoice code and data.** Use
   them yourself, but don't redistribute them, any more than you would the
-  DLLs. That includes the web build (`gui/dist/`): serve it locally, don't
-  put it on a public website.
+  DLLs.
 
 ## Platforms
 
@@ -83,8 +82,16 @@ trunk serve --release              # http://127.0.0.1:8080
 trunk build --release              # or build static files into gui/dist/
 ```
 
-The "Original DLLs" backend is native-only. The page embeds the DLL data
-(see above), so keep it local.
+The page reads its setup from the URL, and the address bar follows the UI,
+so you can bookmark or share a setup:
+`?text=Hola+amigos&lang=es&preset=3&pitch=180&gender=female&commands=0`.
+Parameters: `text` or `phonemes`, `lang` (`en`/`es`), `preset` (number or
+name), `pitch`, `rate`, `f0style`, `f0range`, `f0perturb`, `vowel`,
+`gender`, `glottal`, `voicing`, `av`, `ah`, `af` (numbers, or names for the
+drop-downs), and `commands=0` to hide the command palette. See
+`gui/src/query.rs`.
+
+The "Original DLLs" backend is native-only.
 
 ## How exact is it?
 

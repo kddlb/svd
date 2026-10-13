@@ -40,6 +40,40 @@ impl Voice {
         }
     }
 
+    pub fn get(&self, p: Param) -> i32 {
+        match p {
+            Param::Pitch => self.pitch as i32,
+            Param::Rate => self.rate as i32,
+            Param::Gender => self.gender as i32,
+            Param::GlottalSource => self.glottal_source as i32,
+            Param::VoicingMode => self.voicing_mode as i32,
+            Param::F0Style => self.f0_style as i32,
+            Param::F0Range => self.f0_range as i32,
+            Param::F0Perturb => self.f0_perturb as i32,
+            Param::VowelFactor => self.vowel_factor as i32,
+            Param::AvBias => self.av_bias as i32,
+            Param::AhBias => self.ah_bias as i32,
+            Param::AfBias => self.af_bias as i32,
+        }
+    }
+
+    pub fn set(&mut self, p: Param, v: i32) {
+        match p {
+            Param::Pitch => self.pitch = v as u16,
+            Param::Rate => self.rate = v as u16,
+            Param::Gender => self.gender = v as u16,
+            Param::GlottalSource => self.glottal_source = v as u16,
+            Param::VoicingMode => self.voicing_mode = v as u16,
+            Param::F0Style => self.f0_style = v as u16,
+            Param::F0Range => self.f0_range = v as u16,
+            Param::F0Perturb => self.f0_perturb = v as u16,
+            Param::VowelFactor => self.vowel_factor = v as u16,
+            Param::AvBias => self.av_bias = v as i16,
+            Param::AhBias => self.ah_bias = v as i16,
+            Param::AfBias => self.af_bias = v as i16,
+        }
+    }
+
     /// The preset name stored in an SVVOICEINFO.
     pub fn name_from_info(b: &[u8]) -> String {
         let n = &b[0x4a..0x6a];
